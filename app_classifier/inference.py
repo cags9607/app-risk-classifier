@@ -1,43 +1,257 @@
-from __future__ import annotations
-
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Dict, List, Optional
 import json
+import os
+from typing import Any, Dict, List, Optional
+
+import pandas as pd
+import torch
+
+from huggingface_hub import hf_hub_download
+from peft import PeftModel
+from transformers import (
+    AutoModelForSequenceClassification,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+)
+
+from .text import make_text
 
 
-@dataclass
-class TaskConfig:
-    task_name: str
-    mode: str
-    model_name: str
-    hf_model_id: str
-    output_dir: str
-    label_col: str
-    sample_bucket_col: str = "sample_bucket"
-    title_col: str = "title"
-    description_col: str = "description"
-    bundle_id_col: str = "bundle_id"
-    training_features: List[str] = field(default_factory=lambda: ["title", "description"])
-    labeling_features: List[str] = field(default_factory=lambda: ["bundle_id", "title", "description"])
-    output_cols: Dict[str, str] = field(default_factory=dict)
-    positive_labels: Optional[List[str]] = None
-    negative_labels: Optional[List[str]] = None
-    label_mapping_path: Optional[str] = None
+def _get_hf_token(token: Optional[str] = None) -> Optional[str]:
+    return (
+        token
+        or os.getenv("APP_CLASSIFIER_HF_TOKEN")
+        or os.getenv("HF_TOKEN")
+        or os.getenv("HUGGINGFACE_HUB_TOKEN")
+    )
 
 
-def load_task_config(path: str | Path) -> TaskConfig:
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    return TaskConfig(**data)
+def _load_label_mapping(
+    model_id: str,
+    subfolder: Optional[str] = None,
+    token: Optional[str] = None,
+) -> Dict[str, Any]:
+    path = hf_hub_download(
+        repo_id = model_id,
+        filename = "label_mapping.json",
+        subfolder = subfolder,
+        token = token,
+    )
+
+    with open(path, "r", encoding = "utf-8") as f:
+        mapping = json.load(f)
+
+    if "label2id" not in mapping or "id2label" not in mapping:
+        raise ValueError("label_mapping.json must contain label2id and id2label.")
+
+    label2id = {
+        str(label): int(label_id)
+        for label, label_id in mapping["label2id"].items()
+    }
+
+    id2label = {
+        int(label_id): str(label)
+        for label_id, label in mapping["id2label"].items()
+    }
+
+    return {
+        "label2id": label2id,
+        "id2label": id2label,
+    }
 
 
-def load_label_mapping(path: str | Path) -> Dict[str, Dict[str, int | str]]:
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+class AppRiskClassifier:
+    def __init__(
+        self,
+        model_id: str,
+        subfolder: Optional[str] = None,
+        token: Optional[str] = None,
+        base_model_name: str = "Qwen/Qwen2.5-3B-Instruct",
+        max_length: int = 512,
+        device_map: str = "auto",
+        load_in_4bit: bool = True,
+    ):
+        self.model_id = model_id
+        self.subfolder = subfolder
+        self.token = _get_hf_token(token)
+        self.base_model_name = base_model_name
+        self.max_length = max_length
 
+        self.label_mapping = _load_label_mapping(
+            model_id = model_id,
+            subfolder = subfolder,
+            token = self.token,
+        )
 
-def save_json(obj, path: str | Path):
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(obj, f, indent=2, ensure_ascii=False)
+        self.label2id = self.label_mapping["label2id"]
+        self.id2label = self.label_mapping["id2label"]
+        self.num_labels = len(self.id2label)
+
+        compute_dtype = (
+            torch.bfloat16
+            if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+            else torch.float16
+        )
+
+        quantization_config = None
+        if load_in_4bit:
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit = True,
+                bnb_4bit_quant_type = "nf4",
+                bnb_4bit_use_double_quant = True,
+                bnb_4bit_compute_dtype = compute_dtype,
+            )
+
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_id,
+            subfolder = subfolder,
+            token = self.token,
+            use_fast = True,
+        )
+
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        self.model = AutoModelForSequenceClassification.from_pretrained(
+            base_model_name,
+            num_labels = self.num_labels,
+            id2label = {int(k): v for k, v in self.id2label.items()},
+            label2id = {k: int(v) for k, v in self.label2id.items()},
+            quantization_config = quantization_config,
+            device_map = device_map,
+            torch_dtype = compute_dtype,
+            token = self.token,
+        )
+
+        self.model.config.pad_token_id = self.tokenizer.pad_token_id
+        self.model.config.problem_type = "single_label_classification"
+
+        self.model = PeftModel.from_pretrained(
+            self.model,
+            model_id,
+            subfolder = subfolder,
+            token = self.token,
+        )
+
+        self.model.eval()
+
+    @classmethod
+    def from_hf(
+        cls,
+        model_id: str,
+        subfolder: Optional[str] = None,
+        token: Optional[str] = None,
+        **kwargs,
+    ):
+        return cls(
+            model_id = model_id,
+            subfolder = subfolder,
+            token = token,
+            **kwargs,
+        )
+
+    def predict_texts(
+        self,
+        texts: List[str],
+        batch_size: int = 8,
+    ) -> pd.DataFrame:
+        rows = []
+
+        for start in range(0, len(texts), batch_size):
+            batch_texts = texts[start:start + batch_size]
+
+            enc = self.tokenizer(
+                batch_texts,
+                truncation = True,
+                max_length = self.max_length,
+                padding = True,
+                return_tensors = "pt",
+            )
+
+            enc = {
+                k: v.to(self.model.device)
+                for k, v in enc.items()
+            }
+
+            with torch.no_grad():
+                out = self.model(**enc)
+                probs = torch.softmax(out.logits, dim = 1).detach().cpu().numpy()
+
+            pred_ids = probs.argmax(axis = 1)
+            pred_conf = probs.max(axis = 1)
+
+            for i, pred_id in enumerate(pred_ids):
+                pred_id = int(pred_id)
+
+                row = {
+                    "pred_label_id": pred_id,
+                    "pred_label": self.id2label[pred_id],
+                    "pred_confidence": float(pred_conf[i]),
+                }
+
+                for class_id, class_name in self.id2label.items():
+                    safe_name = (
+                        str(class_name)
+                        .strip()
+                        .lower()
+                        .replace(" ", "_")
+                        .replace("/", "_")
+                        .replace("-", "_")
+                    )
+
+                    row[f"pred_prob_{safe_name}"] = float(probs[i, int(class_id)])
+
+                rows.append(row)
+
+        return pd.DataFrame(rows)
+
+    def predict_df(
+        self,
+        df: pd.DataFrame,
+        title_col: str = "title",
+        description_col: str = "description",
+        batch_size: int = 8,
+    ) -> pd.DataFrame:
+        if title_col not in df.columns:
+            raise ValueError(f"Missing title column: {title_col}")
+
+        if description_col not in df.columns:
+            raise ValueError(f"Missing description column: {description_col}")
+
+        texts = [
+            make_text(title, description)
+            for title, description in zip(df[title_col], df[description_col])
+        ]
+
+        pred_df = self.predict_texts(
+            texts,
+            batch_size = batch_size,
+        )
+
+        return pd.concat(
+            [
+                df.reset_index(drop = True),
+                pred_df.reset_index(drop = True),
+            ],
+            axis = 1,
+        )
+
+    def predict_one(
+        self,
+        title: str,
+        description: str,
+    ) -> Dict[str, Any]:
+        df = pd.DataFrame([
+            {
+                "title": title,
+                "description": description,
+            }
+        ])
+
+        out = self.predict_df(
+            df,
+            title_col = "title",
+            description_col = "description",
+            batch_size = 1,
+        )
+
+        return out.iloc[0].to_dict()
