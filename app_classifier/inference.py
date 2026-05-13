@@ -53,10 +53,37 @@ def _load_label_mapping(
         for label_id, label in mapping["id2label"].items()
     }
 
+    expected_ids = set(range(len(id2label)))
+    observed_ids = set(id2label.keys())
+
+    if observed_ids != expected_ids:
+        raise ValueError(
+            "id2label ids must be contiguous integers starting at 0. "
+            f"Observed ids: {sorted(observed_ids)}"
+        )
+
+    for label, label_id in label2id.items():
+        if id2label.get(label_id) != label:
+            raise ValueError(
+                "label2id and id2label are inconsistent for "
+                f"label={label!r}, id={label_id!r}."
+            )
+
     return {
         "label2id": label2id,
         "id2label": id2label,
     }
+
+
+def _safe_prob_column_name(label: str) -> str:
+    return (
+        str(label)
+        .strip()
+        .lower()
+        .replace(" ", "_")
+        .replace("/", "_")
+        .replace("-", "_")
+    )
 
 
 class AppRiskClassifier:
@@ -86,13 +113,11 @@ class AppRiskClassifier:
         self.id2label = self.label_mapping["id2label"]
         self.num_labels = len(self.id2label)
 
-        compute_dtype = (
-            torch.bfloat16
-            if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
-            else torch.float16
-        )
+        # Use fp16 for inference. bf16 logits can fail when converting to NumPy.
+        compute_dtype = torch.float16
 
         quantization_config = None
+
         if load_in_4bit:
             quantization_config = BitsAndBytesConfig(
                 load_in_4bit = True,
@@ -114,11 +139,17 @@ class AppRiskClassifier:
         self.model = AutoModelForSequenceClassification.from_pretrained(
             base_model_name,
             num_labels = self.num_labels,
-            id2label = {int(k): v for k, v in self.id2label.items()},
-            label2id = {k: int(v) for k, v in self.label2id.items()},
+            id2label = {
+                int(label_id): label
+                for label_id, label in self.id2label.items()
+            },
+            label2id = {
+                label: int(label_id)
+                for label, label_id in self.label2id.items()
+            },
             quantization_config = quantization_config,
             device_map = device_map,
-            torch_dtype = compute_dtype,
+            dtype = compute_dtype,
             token = self.token,
         )
 
@@ -174,7 +205,12 @@ class AppRiskClassifier:
 
             with torch.no_grad():
                 out = self.model(**enc)
-                probs = torch.softmax(out.logits, dim = 1).detach().cpu().numpy()
+
+                # Important:
+                # Some environments return bf16/fp16 logits. Convert logits to
+                # fp32 before softmax and before moving to NumPy.
+                logits = out.logits.float()
+                probs = torch.softmax(logits, dim = 1).detach().cpu().numpy()
 
             pred_ids = probs.argmax(axis = 1)
             pred_conf = probs.max(axis = 1)
@@ -189,16 +225,10 @@ class AppRiskClassifier:
                 }
 
                 for class_id, class_name in self.id2label.items():
-                    safe_name = (
-                        str(class_name)
-                        .strip()
-                        .lower()
-                        .replace(" ", "_")
-                        .replace("/", "_")
-                        .replace("-", "_")
-                    )
+                    class_id = int(class_id)
+                    safe_name = _safe_prob_column_name(class_name)
 
-                    row[f"pred_prob_{safe_name}"] = float(probs[i, int(class_id)])
+                    row[f"pred_prob_{safe_name}"] = float(probs[i, class_id])
 
                 rows.append(row)
 
