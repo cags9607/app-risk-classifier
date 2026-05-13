@@ -6,7 +6,7 @@ import pandas as pd
 import torch
 
 from huggingface_hub import hf_hub_download
-from peft import PeftModel
+from peft import PeftConfig, PeftModel
 from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
@@ -75,6 +75,27 @@ def _load_label_mapping(
     }
 
 
+def _load_base_model_name_from_adapter(
+    model_id: str,
+    subfolder: Optional[str] = None,
+    token: Optional[str] = None,
+) -> str:
+    peft_config = PeftConfig.from_pretrained(
+        model_id,
+        subfolder = subfolder,
+        token = token,
+    )
+
+    base_model_name = getattr(peft_config, "base_model_name_or_path", None)
+
+    if not base_model_name:
+        raise ValueError(
+            "Could not infer base_model_name_or_path from adapter_config.json."
+        )
+
+    return base_model_name
+
+
 def _safe_prob_column_name(label: str) -> str:
     return (
         str(label)
@@ -92,7 +113,7 @@ class AppRiskClassifier:
         model_id: str,
         subfolder: Optional[str] = None,
         token: Optional[str] = None,
-        base_model_name: str = "Qwen/Qwen2.5-3B-Instruct",
+        base_model_name: Optional[str] = None,
         max_length: int = 512,
         device_map: str = "auto",
         load_in_4bit: bool = True,
@@ -100,8 +121,17 @@ class AppRiskClassifier:
         self.model_id = model_id
         self.subfolder = subfolder
         self.token = _get_hf_token(token)
-        self.base_model_name = base_model_name
         self.max_length = max_length
+
+        self.base_model_name = (
+            base_model_name
+            or os.getenv("APP_CLASSIFIER_BASE_MODEL_NAME")
+            or _load_base_model_name_from_adapter(
+                model_id = model_id,
+                subfolder = subfolder,
+                token = self.token,
+            )
+        )
 
         self.label_mapping = _load_label_mapping(
             model_id = model_id,
@@ -113,7 +143,6 @@ class AppRiskClassifier:
         self.id2label = self.label_mapping["id2label"]
         self.num_labels = len(self.id2label)
 
-        # Use fp16 for inference. bf16 logits can fail when converting to NumPy.
         compute_dtype = torch.float16
 
         quantization_config = None
@@ -136,8 +165,12 @@ class AppRiskClassifier:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
+        print(f"Loading base model: {self.base_model_name}")
+        print(f"Loading adapter repo: {self.model_id}")
+        print(f"Loading adapter subfolder: {self.subfolder}")
+
         self.model = AutoModelForSequenceClassification.from_pretrained(
-            base_model_name,
+            self.base_model_name,
             num_labels = self.num_labels,
             id2label = {
                 int(label_id): label
@@ -149,7 +182,7 @@ class AppRiskClassifier:
             },
             quantization_config = quantization_config,
             device_map = device_map,
-            dtype = compute_dtype,
+            torch_dtype = compute_dtype,
             token = self.token,
         )
 
@@ -206,9 +239,8 @@ class AppRiskClassifier:
             with torch.no_grad():
                 out = self.model(**enc)
 
-                # Important:
-                # Some environments return bf16/fp16 logits. Convert logits to
-                # fp32 before softmax and before moving to NumPy.
+                # Avoid bf16/fp16 -> NumPy issues.
+                # Always cast logits to fp32 before softmax.
                 logits = out.logits.float()
                 probs = torch.softmax(logits, dim = 1).detach().cpu().numpy()
 
