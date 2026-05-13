@@ -1,20 +1,34 @@
 import os
 
-QUEUE_API_KEY = os.getenv("QUEUE_API_KEY", "")
-QUEUE_URL = os.getenv("QUEUE_URL", "https://deepsee-queue.herokuapp.com/exchange-batch")
-QUEUE_KEY = os.getenv("QUEUE_KEY", "APP_CLASSIFIER_PLACEHOLDER")
+
+QUEUE_URL = os.getenv(
+    "QUEUE_URL",
+    "https://PLACEHOLDER_QUEUE_URL/exchange-batch",
+)
+
+QUEUE_API_KEY = os.getenv(
+    "QUEUE_API_KEY",
+    "PLACEHOLDER_QUEUE_API_KEY",
+)
+
+QUEUE_KEY = os.getenv(
+    "QUEUE_KEY",
+    "PLACEHOLDER_QUEUE_KEY",
+)
 
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "8"))
-EMPTY_QUEUE_SLEEP_SECONDS = int(os.getenv("EMPTY_QUEUE_SLEEP_SECONDS", "60"))
 
-APP_CLASSIFIER_HF_REPO_ID = os.getenv("APP_CLASSIFIER_HF_REPO_ID", "YOUR_ORG/YOUR_MODEL_REPO")
-APP_CLASSIFIER_REVISION = os.getenv("APP_CLASSIFIER_REVISION", "") or None
-APP_CLASSIFIER_HF_TOKEN = os.getenv("APP_CLASSIFIER_HF_TOKEN", "") or None
-APP_CLASSIFIER_TASK_CONFIG = os.getenv("APP_CLASSIFIER_TASK_CONFIG", "configs/pdu.json")
-APP_CLASSIFIER_LABEL_MAPPING_PATH = os.getenv("APP_CLASSIFIER_LABEL_MAPPING_PATH", "") or None
+APP_CLASSIFIER_HF_REPO_ID = os.getenv(
+    "APP_CLASSIFIER_HF_REPO_ID",
+    "Trinotrotolueno/app-risk-adapters",
+)
 
-APP_CLASSIFIER_DEVICE = os.getenv("APP_CLASSIFIER_DEVICE", "cuda")
-APP_CLASSIFIER_MAX_LENGTH = int(os.getenv("APP_CLASSIFIER_MAX_LENGTH", "512"))
-APP_CLASSIFIER_MODEL_BATCH_SIZE = int(os.getenv("APP_CLASSIFIER_MODEL_BATCH_SIZE", "8"))
-APP_CLASSIFIER_LOAD_IN_4BIT = os.getenv("APP_CLASSIFIER_LOAD_IN_4BIT", "1") not in ("0", "false", "False")
-APP_CLASSIFIER_PREFER_BF16 = os.getenv("APP_CLASSIFIER_PREFER_BF16", "1") not in ("0", "false", "False")
+APP_CLASSIFIER_HF_SUBFOLDER = os.getenv(
+    "APP_CLASSIFIER_HF_SUBFOLDER",
+    "pdu",
+)
+
+APP_CLASSIFIER_HF_TOKEN = os.getenv(
+    "APP_CLASSIFIER_HF_TOKEN",
+    os.getenv("HF_TOKEN", os.getenv("HUGGINGFACE_HUB_TOKEN", "")),
+)
