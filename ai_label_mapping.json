@@ -1,0 +1,35 @@
+{
+  "task_name": "incentivized",
+  "mode": "binary",
+  "model_name": "Qwen/Qwen2.5-3B-Instruct",
+  "hf_model_id": "YOUR_ORG/YOUR_INCENTIVIZED_MODEL",
+  "output_dir": "/content/qwen3b_qlora_incentivized_title_desc_only",
+  "label_col": "reward_label",
+  "positive_labels": [
+    "rewarded_actions"
+  ],
+  "negative_labels": [
+    "not_rewarded_actions"
+  ],
+  "sample_bucket_col": "sample_bucket",
+  "title_col": "title",
+  "description_col": "description",
+  "bundle_id_col": "bundle_id",
+  "training_features": [
+    "title",
+    "description"
+  ],
+  "labeling_features": [
+    "bundle_id",
+    "title",
+    "description"
+  ],
+  "label_mapping_path": "label_mappings/incentivized_label_mapping.json",
+  "output_cols": {
+    "label": "reward_label",
+    "confidence": "reward_confidence",
+    "reasoning_short": "reward_reason",
+    "evidence": "reward_evidence",
+    "trigger_types": "reward_triggers"
+  }
+}

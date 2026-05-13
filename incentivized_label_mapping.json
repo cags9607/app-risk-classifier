@@ -1,0 +1,31 @@
+{
+  "task_name": "pdu",
+  "mode": "multiclass",
+  "model_name": "Qwen/Qwen2.5-3B-Instruct",
+  "hf_model_id": "YOUR_ORG/YOUR_PDU_MODEL",
+  "output_dir": "/content/qwen3b_qlora_pdu_title_desc_only",
+  "label_col": "pdu_subcategory",
+  "sample_bucket_col": "sample_bucket",
+  "title_col": "title",
+  "description_col": "description",
+  "bundle_id_col": "bundle_id",
+  "training_features": [
+    "title",
+    "description"
+  ],
+  "labeling_features": [
+    "bundle_id",
+    "title",
+    "description"
+  ],
+  "label_mapping_path": "label_mappings/pdu_label_mapping.json",
+  "output_cols": {
+    "label": "pdu_label",
+    "confidence": "pdu_confidence",
+    "subcategory": "pdu_subcategory",
+    "reasoning_short": "pdu_reason",
+    "evidence": "pdu_evidence",
+    "trigger_types": "pdu_triggers",
+    "permission_inference": "pdu_permission_inference"
+  }
+}
