@@ -1,9 +1,25 @@
-__pycache__/
-*.pyc
-.env
-.DS_Store
-.ipynb_checkpoints/
-outputs/
-*.zip
-*.csv
-*.parquet
+import logging
+import requests
+
+from processor_config import QUEUE_API_KEY, QUEUE_URL, QUEUE_KEY
+
+logger = logging.getLogger(__name__)
+
+
+def pop(batch_size: int = 1) -> list:
+    headers = {"x-api-key": QUEUE_API_KEY}
+    data = {"key": QUEUE_KEY, "get": batch_size}
+
+    resp = requests.post(url=QUEUE_URL, json=data, headers=headers)
+    resp.raise_for_status()
+
+    payload = resp.json()
+    return payload["data"]["jobs"]
+
+
+def push(processed_jobs: list):
+    headers = {"x-api-key": QUEUE_API_KEY}
+    data = {"key": QUEUE_KEY, "put": processed_jobs}
+
+    resp = requests.post(url=QUEUE_URL, json=data, headers=headers)
+    resp.raise_for_status()

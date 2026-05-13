@@ -1,40 +1,29 @@
-import argparse
-import json
-import pandas as pd
+type: task
+name: app-classifier-worker
 
-from app_classifier.config import load_task_config
-from app_classifier.training import train_qlora_classifier
+python: "3.11"
 
+env:
+  - QUEUE_URL
+  - QUEUE_API_KEY
+  - QUEUE_KEY=APP_CLASSIFIER_PLACEHOLDER
+  - APP_CLASSIFIER_HF_REPO_ID=YOUR_ORG/YOUR_MODEL_REPO
+  - APP_CLASSIFIER_TASK_CONFIG=configs/pdu.json
+  - APP_CLASSIFIER_REVISION=
+  - APP_CLASSIFIER_HF_TOKEN=
+  - APP_CLASSIFIER_LABEL_MAPPING_PATH=
+  - BATCH_SIZE=8
+  - EMPTY_QUEUE_SLEEP_SECONDS=60
+  - APP_CLASSIFIER_DEVICE=cuda
+  - APP_CLASSIFIER_MAX_LENGTH=512
+  - APP_CLASSIFIER_MODEL_BATCH_SIZE=8
+  - APP_CLASSIFIER_LOAD_IN_4BIT=1
+  - APP_CLASSIFIER_PREFER_BF16=1
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--config", required=True)
-    ap.add_argument("--input_csv", required=True)
-    ap.add_argument("--output_dir", default=None)
-    ap.add_argument("--val_size", type=float, default=0.0)
-    ap.add_argument("--epochs", type=int, default=1)
-    args = ap.parse_args()
+commands:
+  - pip install -e .
+  - python processor.py
 
-    cfg = load_task_config(args.config)
-    df = pd.read_csv(args.input_csv)
-
-    result = train_qlora_classifier(
-        df,
-        sample_bucket_col=cfg.sample_bucket_col,
-        title_col=cfg.title_col,
-        description_col=cfg.description_col,
-        label_col=cfg.label_col,
-        mode=cfg.mode,
-        model_name=cfg.model_name,
-        output_dir=args.output_dir or cfg.output_dir,
-        val_size=args.val_size,
-        num_train_epochs=args.epochs,
-        positive_labels=set(cfg.positive_labels or []),
-        negative_labels=set(cfg.negative_labels or []),
-    )
-
-    print(json.dumps(result["test_metrics"], indent=2))
-
-
-if __name__ == "__main__":
-    main()
+resources:
+  gpu:
+    memory: 16GB..24GB
