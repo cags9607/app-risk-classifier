@@ -1,50 +1,66 @@
-import json
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Dict, Optional
+import os
+from getpass import getpass
+from typing import Optional, Tuple
+from urllib.parse import urlparse
 
 
-@dataclass
-class TaskConfig:
-    task_name: str
-    mode: str
-    model_name: str
-    hf_model_id: Optional[str]
-    output_dir: Optional[str]
-    label_col: Optional[str]
-    sample_bucket_col: str = "sample_bucket"
-    title_col: str = "title"
-    description_col: str = "description"
-    bundle_id_col: str = "bundle_id"
-    output_cols: Optional[Dict[str, str]] = None
-    positive_labels: Optional[list] = None
-    negative_labels: Optional[list] = None
-
-
-def load_task_config(path_or_task: str) -> TaskConfig:
-    candidate = Path(path_or_task)
-
-    if not candidate.exists():
-        candidate = Path("configs") / f"{path_or_task}.json"
-
-    if not candidate.exists():
-        raise FileNotFoundError(f"Could not find config: {path_or_task}")
-
-    with open(candidate, "r", encoding = "utf-8") as f:
-        data: Dict[str, Any] = json.load(f)
-
-    return TaskConfig(
-        task_name = data.get("task_name"),
-        mode = data.get("mode"),
-        model_name = data.get("model_name", "Qwen/Qwen2.5-3B-Instruct"),
-        hf_model_id = data.get("hf_model_id"),
-        output_dir = data.get("output_dir"),
-        label_col = data.get("label_col"),
-        sample_bucket_col = data.get("sample_bucket_col", "sample_bucket"),
-        title_col = data.get("title_col", "title"),
-        description_col = data.get("description_col", "description"),
-        bundle_id_col = data.get("bundle_id_col", "bundle_id"),
-        output_cols = data.get("output_cols"),
-        positive_labels = data.get("positive_labels"),
-        negative_labels = data.get("negative_labels"),
+def get_hf_token(token: Optional[str] = None) -> Optional[str]:
+    return (
+        token
+        or os.getenv("APP_CLASSIFIER_HF_TOKEN")
+        or os.getenv("HF_TOKEN")
+        or os.getenv("HUGGINGFACE_HUB_TOKEN")
+        or None
     )
+
+
+def normalize_hf_repo_id(repo_id_or_url: str) -> str:
+    value = str(repo_id_or_url).strip()
+
+    if not value:
+        raise ValueError("Hugging Face repo ID/URL cannot be empty.")
+
+    if value.startswith("http://") or value.startswith("https://"):
+        parsed = urlparse(value)
+        path_parts = [part for part in parsed.path.split("/") if part]
+
+        if parsed.netloc not in {"huggingface.co", "www.huggingface.co"}:
+            raise ValueError(
+                "Expected a Hugging Face URL like https://huggingface.co/org/repo."
+            )
+
+        if len(path_parts) < 2:
+            raise ValueError(
+                "Could not parse Hugging Face repo ID from URL. "
+                "Expected https://huggingface.co/org/repo."
+            )
+
+        return "/".join(path_parts[:2])
+
+    return value
+
+
+def prompt_for_hf_repo_and_token(
+    model_id: Optional[str] = None,
+    token: Optional[str] = None,
+) -> Tuple[str, Optional[str]]:
+    repo_value = model_id
+
+    while not repo_value:
+        repo_value = input(
+            "Hugging Face repo ID or URL "
+            "(for example Trinotrotolueno/app-risk-adapters): "
+        ).strip()
+
+    repo_id = normalize_hf_repo_id(repo_value)
+
+    hf_token = get_hf_token(token)
+
+    if not hf_token:
+        entered = getpass(
+            "Hugging Face API key/token "
+            "(press Enter if the repo is public): "
+        ).strip()
+        hf_token = entered or None
+
+    return repo_id, hf_token

@@ -3,32 +3,22 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "app-classifier"
+name = "app-risk-classifier"
 version = "0.1.0"
-description = "Title+description app risk classifiers with LLM labeling, QLoRA training, HF adapter inference, and queue processing."
+description = "Inference and queue worker for Hugging Face PEFT app risk classifier adapters."
 requires-python = ">=3.10"
 dependencies = [
     "accelerate>=0.30",
     "bitsandbytes",
-    "datasets",
     "huggingface_hub",
     "numpy",
-    "openai",
     "pandas",
     "peft",
     "requests",
-    "scikit-learn",
     "sentencepiece",
     "torch",
-    "tqdm",
     "transformers>=4.41"
 ]
 
-[project.scripts]
-app-classifier-label = "scripts.label_dataset:main"
-app-classifier-train = "scripts.train_qlora:main"
-app-classifier-predict = "scripts.predict_csv:main"
-app-classifier-predict-one = "scripts.predict_one:main"
-
 [tool.setuptools]
-packages = ["app_classifier", "scripts"]
+packages = ["app_classifier"]

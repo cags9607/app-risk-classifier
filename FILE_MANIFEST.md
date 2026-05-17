@@ -1,40 +1,38 @@
 # File manifest
 
-This archive is intentionally named `app-classifier-complete.zip` to avoid stale cached downloads.
+This archive contains the simplified inference and queue-worker version of the app risk classifier repo.
 
-Root-level worker/library files:
+## Root files
 
-- `pyproject.toml`: installable Python package metadata.
-- `core.py`: review-detector-style public classifier wrapper; loads HF model IDs through config.
+- `README.md`: usage and repo boundary.
+- `FILE_MANIFEST.md`: this file.
+- `pyproject.toml`: installable package metadata.
+- `requirements.txt`: runtime dependencies.
+- `env.example`: environment variable template.
+- `dstack.yml`: queue-worker deployment template.
+- `.gitignore`: ignored local/cache/data files.
+- `core.py`: public prediction wrapper used by the worker.
 - `processor.py`: queue processor loop.
-- `processor_config.py`: environment-based queue/HF/runtime configuration with placeholders.
+- `processor_config.py`: environment-based queue and Hugging Face config.
 - `processor_utils.py`: queue pop/push helpers.
-- `dstack.yml`: deployment placeholder.
 
-Package files:
+## Package files
 
-- `app_classifier/config.py`
-- `app_classifier/inference.py`
-- `app_classifier/labeling.py`
-- `app_classifier/text.py`
-- `app_classifier/training.py`
+- `app_classifier/__init__.py`: exports `AppRiskClassifier`.
+- `app_classifier/config.py`: Hugging Face repo/token helpers.
+- `app_classifier/inference.py`: model loading and dataframe prediction.
+- `app_classifier/text.py`: title/description text formatting.
 
-Scripts:
+## Scripts
 
-- `scripts/label_dataset.py`
-- `scripts/train_qlora.py`
-- `scripts/predict_csv.py`
-- `scripts/predict_one.py`
-- `scripts/zip_output_dir.py`
+- `scripts/predict_csv.py`: CSV batch inference script.
 
-Task files:
+## Not included by design
 
-- `configs/incentivized.json`
-- `configs/ai.json`
-- `configs/pdu.json`
-- `prompts/incentivized.py`
-- `prompts/ai.py`
-- `prompts/pdu.py`
-- `label_mappings/incentivized_label_mapping.json`
-- `label_mappings/ai_label_mapping.json`
-- `label_mappings/pdu_label_mapping.json`
+- Training scripts.
+- Prompt-labeling scripts.
+- Local task configs.
+- Local label mappings.
+- Single-record `predict_one` script/function.
+
+Label mappings now live in the Hugging Face repo beside each adapter subfolder.

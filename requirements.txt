@@ -1,14 +1,10 @@
 accelerate>=0.30
 bitsandbytes
-datasets
 huggingface_hub
 numpy
-openai
 pandas
 peft
 requests
-scikit-learn
 sentencepiece
 torch
-tqdm
 transformers>=4.41

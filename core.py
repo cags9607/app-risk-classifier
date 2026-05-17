@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
+from app_classifier.config import get_hf_token, normalize_hf_repo_id
 from app_classifier.inference import AppRiskClassifier
 
 
@@ -20,13 +21,10 @@ def get_classifier() -> AppRiskClassifier:
     if not model_id:
         raise ValueError("Missing APP_CLASSIFIER_HF_REPO_ID.")
 
-    subfolder = os.getenv("APP_CLASSIFIER_HF_SUBFOLDER") or None
+    model_id = normalize_hf_repo_id(model_id)
 
-    token = (
-        os.getenv("APP_CLASSIFIER_HF_TOKEN")
-        or os.getenv("HF_TOKEN")
-        or os.getenv("HUGGINGFACE_HUB_TOKEN")
-    )
+    subfolder = os.getenv("APP_CLASSIFIER_HF_SUBFOLDER") or None
+    token = get_hf_token()
 
     _CLASSIFIER = AppRiskClassifier.from_hf(
         model_id = model_id,
@@ -56,12 +54,3 @@ def predict_records(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     )
 
     return out.to_dict(orient = "records")
-
-
-def predict_one(title: str, description: str) -> Dict[str, Any]:
-    return predict_records([
-        {
-            "title": title,
-            "description": description,
-        }
-    ])[0]

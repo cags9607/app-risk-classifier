@@ -13,16 +13,9 @@ from transformers import (
     BitsAndBytesConfig,
 )
 
+from .config import get_hf_token, normalize_hf_repo_id
 from .text import make_text
 
-
-def _get_hf_token(token: Optional[str] = None) -> Optional[str]:
-    return (
-        token
-        or os.getenv("APP_CLASSIFIER_HF_TOKEN")
-        or os.getenv("HF_TOKEN")
-        or os.getenv("HUGGINGFACE_HUB_TOKEN")
-    )
 
 
 def _load_label_mapping(
@@ -118,23 +111,23 @@ class AppRiskClassifier:
         device_map: str = "auto",
         load_in_4bit: bool = True,
     ):
-        self.model_id = model_id
+        self.model_id = normalize_hf_repo_id(model_id)
         self.subfolder = subfolder
-        self.token = _get_hf_token(token)
+        self.token = get_hf_token(token)
         self.max_length = max_length
 
         self.base_model_name = (
             base_model_name
             or os.getenv("APP_CLASSIFIER_BASE_MODEL_NAME")
             or _load_base_model_name_from_adapter(
-                model_id = model_id,
+                model_id = self.model_id,
                 subfolder = subfolder,
                 token = self.token,
             )
         )
 
         self.label_mapping = _load_label_mapping(
-            model_id = model_id,
+            model_id = self.model_id,
             subfolder = subfolder,
             token = self.token,
         )
@@ -156,7 +149,7 @@ class AppRiskClassifier:
             )
 
         self.tokenizer = AutoTokenizer.from_pretrained(
-            model_id,
+            self.model_id,
             subfolder = subfolder,
             token = self.token,
             use_fast = True,
@@ -191,7 +184,7 @@ class AppRiskClassifier:
 
         self.model = PeftModel.from_pretrained(
             self.model,
-            model_id,
+            self.model_id,
             subfolder = subfolder,
             token = self.token,
         )
@@ -296,24 +289,3 @@ class AppRiskClassifier:
             ],
             axis = 1,
         )
-
-    def predict_one(
-        self,
-        title: str,
-        description: str,
-    ) -> Dict[str, Any]:
-        df = pd.DataFrame([
-            {
-                "title": title,
-                "description": description,
-            }
-        ])
-
-        out = self.predict_df(
-            df,
-            title_col = "title",
-            description_col = "description",
-            batch_size = 1,
-        )
-
-        return out.iloc[0].to_dict()

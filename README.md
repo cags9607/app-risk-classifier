@@ -1,13 +1,41 @@
-# app-classifier
+# app-risk-classifier
 
-Repo for the three app classifiers built from the notebook workflow:
+Inference and queue-worker repo for app risk classifiers trained elsewhere and hosted as Hugging Face PEFT adapter subfolders.
 
-1. prompt-label data with Llama 70B using `bundle_id + title + description`
-2. fine-tune Qwen/Qwen2.5-3B-Instruct with QLoRA using `title + description` only
-3. run prediction from HuggingFace-hosted adapter repos using `title + description` only
-4. optionally run as a DeepSee-style queue processor
+This repo intentionally does **not** include training scripts, prompt-labeling scripts, local task configs, or local label mappings. Label mappings are loaded from the Hugging Face model repo, next to each adapter subfolder.
 
-The repo intentionally does **not** use `bundle_id` during model inference. `bundle_id` is only used during LLM prompt-labeling.
+## Final scope
+
+This repo does three things:
+
+1. Load a Hugging Face adapter model and its `label_mapping.json`.
+2. Predict app risk labels from `title + description`.
+3. Run the same prediction logic as a DeepSee-style queue worker.
+
+Training, prompt design, and dataset labeling will be added later.
+
+## Expected Hugging Face layout
+
+```text
+owner/app-risk-adapters/
+├── pdu/
+│   ├── adapter_config.json
+│   ├── adapter_model.safetensors
+│   ├── tokenizer files...
+│   └── label_mapping.json
+├── incentivized/
+│   ├── adapter_config.json
+│   ├── adapter_model.safetensors
+│   ├── tokenizer files...
+│   └── label_mapping.json
+└── ai/
+    ├── adapter_config.json
+    ├── adapter_model.safetensors
+    ├── tokenizer files...
+    └── label_mapping.json
+```
+
+`label_mapping.json` must contain both `label2id` and `id2label`.
 
 ## Install
 
@@ -15,21 +43,14 @@ The repo intentionally does **not** use `bundle_id` during model inference. `bun
 pip install -e .
 ```
 
-## Configs
-
-Task configs live in `configs/`:
-
-- `configs/incentivized.json`
-- `configs/ai.json`
-- `configs/pdu.json`
-
-Each config has an `hf_model_id` placeholder. Replace it with the HuggingFace repo that stores the adapter/model assets.
-
 ## Predict CSV
+
+You can pass a Hugging Face repo ID:
 
 ```bash
 python scripts/predict_csv.py \
-  --model_id YOUR_ORG/YOUR_PDU_MODEL \
+  --model_id Trinotrotolueno/app-risk-adapters \
+  --subfolder pdu \
   --input_csv apps.csv \
   --output_csv predictions.csv \
   --title_col title \
@@ -37,36 +58,37 @@ python scripts/predict_csv.py \
   --batch_size 8
 ```
 
+You can also pass a Hugging Face URL:
+
+```bash
+python scripts/predict_csv.py \
+  --model_id https://huggingface.co/Trinotrotolueno/app-risk-adapters \
+  --subfolder pdu \
+  --input_csv apps.csv \
+  --output_csv predictions.csv
+```
+
+If `--model_id` is omitted, the script asks for the Hugging Face repo ID/URL. It also asks for a Hugging Face API key/token if none is provided through `--hf_token`, `APP_CLASSIFIER_HF_TOKEN`, `HF_TOKEN`, or `HUGGINGFACE_HUB_TOKEN`.
+
+For private repos:
+
+```bash
+python scripts/predict_csv.py \
+  --model_id Trinotrotolueno/app-risk-adapters \
+  --subfolder pdu \
+  --hf_token YOUR_HF_TOKEN \
+  --input_csv apps.csv \
+  --output_csv predictions.csv
+```
+
 Output columns include:
 
 - `pred_label_id`
 - `pred_label`
 - `pred_confidence`
-- one `pred_prob_<label>` column per label
-
-For binary tasks, it also adds:
-
-- `pred_prob_positive`
-- `pred_label_bin`
-
-## Predict one app
-
-```bash
-python scripts/predict_one.py \
-  --model_id YOUR_ORG/YOUR_INCENTIVIZED_MODEL \
-  --title "Earn Money" \
-  --description "Watch videos and earn PayPal cash"
-```
+- one `pred_prob_<label>` column per class
 
 ## Queue processor
-
-Root files mirror the review detector style:
-
-- `core.py`
-- `processor.py`
-- `processor_config.py`
-- `processor_utils.py`
-- `dstack.yml`
 
 Set environment variables:
 
@@ -74,9 +96,45 @@ Set environment variables:
 export QUEUE_URL="https://deepsee-queue.herokuapp.com/exchange-batch"
 export QUEUE_API_KEY="..."
 export QUEUE_KEY="APP_CLASSIFIER_PLACEHOLDER"
-export APP_CLASSIFIER_HF_REPO_ID="YOUR_ORG/YOUR_MODEL_REPO"
-export APP_CLASSIFIER_TASK_CONFIG="configs/pdu.json"
+export APP_CLASSIFIER_HF_REPO_ID="Trinotrotolueno/app-risk-adapters"
+export APP_CLASSIFIER_HF_SUBFOLDER="pdu"
+export APP_CLASSIFIER_HF_TOKEN="..."
+export BATCH_SIZE=8
+
 python processor.py
 ```
 
-Expected queue entries may be under `jobs`, `entries`, or `apps`. Each entry should contain at least `title` and `description`. `bundle_id` is passed through if present, but is not used by prediction.
+Expected queue jobs can either be flat objects or objects with a `payload` dict. Each payload should contain at least:
+
+```json
+{
+  "title": "App title",
+  "description": "App description"
+}
+```
+
+The worker attaches model outputs under the job's `result` field and pushes the processed jobs back to the queue.
+
+## Repo structure
+
+```text
+app-risk-classifier-main/
+├── README.md
+├── FILE_MANIFEST.md
+├── pyproject.toml
+├── requirements.txt
+├── env.example
+├── dstack.yml
+├── .gitignore
+├── core.py
+├── processor.py
+├── processor_config.py
+├── processor_utils.py
+├── app_classifier/
+│   ├── __init__.py
+│   ├── config.py
+│   ├── inference.py
+│   └── text.py
+└── scripts/
+    └── predict_csv.py
+```
