@@ -1,9 +1,17 @@
 import os
 from copy import deepcopy
 from getpass import getpass
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 from urllib.parse import urlparse
 
+
+VALID_CACHE_POLICIES = {
+    "keep",
+    "unload_between_models",
+    "unload_after_call",
+}
+
+DEFAULT_CACHE_POLICY = "keep"
 
 DEFAULT_MODEL_SPECS: Dict[str, Dict[str, str]] = {
     "pdu": {
@@ -25,6 +33,18 @@ DEFAULT_LIST_MODELS = [
     "ai-powered",
     "incentivized",
 ]
+
+
+def env_bool(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip() in {
+        "1",
+        "true",
+        "TRUE",
+        "yes",
+        "YES",
+        "y",
+        "Y",
+    }
 
 
 def get_hf_token(token: Optional[str] = None) -> Optional[str]:
@@ -136,7 +156,6 @@ def parse_model_list(
             f"{unknown}. Valid values are: {sorted(DEFAULT_MODEL_SPECS)}"
         )
 
-    # Preserve order, remove duplicates.
     seen = set()
     deduped = []
 
@@ -157,3 +176,28 @@ def get_model_specs(
         model_name: deepcopy(DEFAULT_MODEL_SPECS[model_name])
         for model_name in models
     }
+
+
+def normalize_cache_policy(cache_policy: Optional[str] = None) -> str:
+    value = (
+        cache_policy
+        or os.getenv("APP_CLASSIFIER_CACHE_POLICY")
+        or DEFAULT_CACHE_POLICY
+    )
+
+    value = str(value).strip()
+
+    # Backward-compatible aliases.
+    if value in {"persist", "persistent"}:
+        value = "keep"
+
+    if value in {"unload_between_calls", "unload_each_call"}:
+        value = "unload_after_call"
+
+    if value not in VALID_CACHE_POLICIES:
+        raise ValueError(
+            f"Invalid cache_policy={value!r}. "
+            f"Valid values are: {sorted(VALID_CACHE_POLICIES)}"
+        )
+
+    return value
