@@ -2,11 +2,14 @@ import json
 import logging
 import os
 import time
+import uuid
+from collections import Counter
 from typing import Any, Dict, List
 
 from core import predict_records
 from processor_config import (
     APP_CLASSIFIER_CACHE_POLICY,
+    APP_CLASSIFIER_DUPLICATE_BUNDLE_ID_POLICY,
     APP_CLASSIFIER_HF_REPO_ID,
     APP_CLASSIFIER_HF_TOKEN,
     APP_CLASSIFIER_INCLUDE_LABEL_IDS,
@@ -15,6 +18,7 @@ from processor_config import (
     APP_CLASSIFIER_MAX_LENGTH,
     APP_CLASSIFIER_NO_4BIT,
     APP_CLASSIFIER_OVERWRITE_PREDICTION_ID,
+    APP_CLASSIFIER_REQUIRE_BUNDLE_ID,
     BATCH_SIZE,
 )
 from processor_utils import pop, push
@@ -26,6 +30,18 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _env_bool(value: str) -> bool:
+    return str(value).strip() in {
+        "1",
+        "true",
+        "TRUE",
+        "yes",
+        "YES",
+        "y",
+        "Y",
+    }
 
 
 def _set_model_env():
@@ -49,6 +65,137 @@ def _extract_payload(job: Dict[str, Any]) -> Dict[str, Any]:
     return job
 
 
+def _coerce_text(value: Any) -> str:
+    if value is None:
+        return ""
+
+    return str(value).strip()
+
+
+def _validate_duplicate_bundle_policy():
+    valid_policies = {"error"}
+
+    if APP_CLASSIFIER_DUPLICATE_BUNDLE_ID_POLICY not in valid_policies:
+        raise ValueError(
+            "Invalid APP_CLASSIFIER_DUPLICATE_BUNDLE_ID_POLICY="
+            f"{APP_CLASSIFIER_DUPLICATE_BUNDLE_ID_POLICY!r}. "
+            f"Valid values are: {sorted(valid_policies)}"
+        )
+
+
+def _validate_bundle_ids(payloads: List[Dict[str, Any]]):
+    _validate_duplicate_bundle_policy()
+
+    require_bundle_id = _env_bool(APP_CLASSIFIER_REQUIRE_BUNDLE_ID)
+
+    bundle_ids = [
+        _coerce_text(payload.get("bundle_id"))
+        for payload in payloads
+    ]
+
+    if require_bundle_id:
+        missing_positions = [
+            i
+            for i, bundle_id in enumerate(bundle_ids)
+            if not bundle_id
+        ]
+
+        if missing_positions:
+            raise ValueError(
+                "Missing bundle_id in queue payload(s) at batch positions: "
+                f"{missing_positions[:20]}"
+            )
+
+    non_empty_bundle_ids = [
+        bundle_id
+        for bundle_id in bundle_ids
+        if bundle_id
+    ]
+
+    counts = Counter(non_empty_bundle_ids)
+
+    duplicates = {
+        bundle_id: n
+        for bundle_id, n in counts.items()
+        if n > 1
+    }
+
+    if duplicates and APP_CLASSIFIER_DUPLICATE_BUNDLE_ID_POLICY == "error":
+        duplicate_preview = dict(list(duplicates.items())[:20])
+
+        raise ValueError(
+            "Duplicate bundle_id values found in the same queue batch. "
+            "This would make output alignment ambiguous. "
+            f"Duplicate preview: {duplicate_preview}"
+        )
+
+
+def _build_records(payloads: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [
+        {
+            # Internal only. Used by inference for row alignment.
+            # It is removed before the result is pushed.
+            "prediction_id": uuid.uuid4().hex,
+
+            # External identifier. This is returned downstream.
+            "bundle_id": _coerce_text(payload.get("bundle_id")),
+
+            "title": _coerce_text(payload.get("title")),
+            "description": _coerce_text(payload.get("description")),
+        }
+        for payload in payloads
+    ]
+
+
+def _clean_prediction_result(prediction: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Queue output contract:
+      - bundle_id
+      - title
+      - description
+      - *_pred_label
+      - *_pred_confidence
+
+    Optional, if enabled by env:
+      - *_pred_prob_*
+      - *_pred_label_id
+
+    Internal prediction_id is never returned.
+    """
+    include_probabilities = _env_bool(APP_CLASSIFIER_INCLUDE_PROBABILITIES)
+    include_label_ids = _env_bool(APP_CLASSIFIER_INCLUDE_LABEL_IDS)
+
+    cleaned = {}
+
+    for col in ["bundle_id", "title", "description"]:
+        cleaned[col] = prediction.get(col)
+
+    for key, value in prediction.items():
+        if key == "prediction_id":
+            continue
+
+        if key in {"bundle_id", "title", "description"}:
+            continue
+
+        if key.endswith("_pred_label"):
+            cleaned[key] = value
+            continue
+
+        if key.endswith("_pred_confidence"):
+            cleaned[key] = value
+            continue
+
+        if include_label_ids and key.endswith("_pred_label_id"):
+            cleaned[key] = value
+            continue
+
+        if include_probabilities and "_pred_prob_" in key:
+            cleaned[key] = value
+            continue
+
+    return cleaned
+
+
 def _attach_result(job: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(job)
 
@@ -63,22 +210,25 @@ def _attach_result(job: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any
 def process_jobs(jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     _set_model_env()
 
+    if not jobs:
+        return []
+
     payloads = [_extract_payload(job) for job in jobs]
 
-    records = [
-        {
-            "prediction_id": payload.get("prediction_id"),
-            "title": payload.get("title", ""),
-            "description": payload.get("description", ""),
-        }
-        for payload in payloads
-    ]
+    _validate_bundle_ids(payloads)
+
+    records = _build_records(payloads)
 
     predictions = predict_records(records)
 
+    cleaned_predictions = [
+        _clean_prediction_result(pred)
+        for pred in predictions
+    ]
+
     processed = [
         _attach_result(job, pred)
-        for job, pred in zip(jobs, predictions)
+        for job, pred in zip(jobs, cleaned_predictions)
     ]
 
     return processed
@@ -109,10 +259,13 @@ def main():
     _set_model_env()
 
     logger.info(
-        "Starting app classifier processor: models=%s, cache_policy=%s, batch_size=%s",
+        "Starting app classifier processor: models=%s, cache_policy=%s, batch_size=%s, "
+        "require_bundle_id=%s, duplicate_bundle_id_policy=%s",
         APP_CLASSIFIER_LIST_MODELS,
         APP_CLASSIFIER_CACHE_POLICY,
         BATCH_SIZE,
+        APP_CLASSIFIER_REQUIRE_BUNDLE_ID,
+        APP_CLASSIFIER_DUPLICATE_BUNDLE_ID_POLICY,
     )
 
     while True:
