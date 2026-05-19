@@ -29,6 +29,11 @@ env:
   APP_CLASSIFIER_OVERWRITE_PREDICTION_ID: "0"
   APP_CLASSIFIER_NO_4BIT: "0"
 
+  # Queue identity behavior.
+  # prediction_id is internal only; bundle_id is returned externally.
+  APP_CLASSIFIER_REQUIRE_BUNDLE_ID: "1"
+  APP_CLASSIFIER_DUPLICATE_BUNDLE_ID_POLICY: "error"
+
 commands:
   - pip install -U pip
   - pip install -e .
