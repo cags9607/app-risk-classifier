@@ -6,12 +6,14 @@ from typing import Any, Dict, List
 
 from core import predict_records
 from processor_config import (
+    APP_CLASSIFIER_CACHE_POLICY,
     APP_CLASSIFIER_HF_REPO_ID,
     APP_CLASSIFIER_HF_TOKEN,
     APP_CLASSIFIER_INCLUDE_LABEL_IDS,
     APP_CLASSIFIER_INCLUDE_PROBABILITIES,
     APP_CLASSIFIER_LIST_MODELS,
     APP_CLASSIFIER_MAX_LENGTH,
+    APP_CLASSIFIER_NO_4BIT,
     APP_CLASSIFIER_OVERWRITE_PREDICTION_ID,
     BATCH_SIZE,
 )
@@ -30,9 +32,11 @@ def _set_model_env():
     os.environ["APP_CLASSIFIER_HF_REPO_ID"] = APP_CLASSIFIER_HF_REPO_ID
     os.environ["APP_CLASSIFIER_LIST_MODELS"] = APP_CLASSIFIER_LIST_MODELS
     os.environ["APP_CLASSIFIER_MAX_LENGTH"] = str(APP_CLASSIFIER_MAX_LENGTH)
+    os.environ["APP_CLASSIFIER_CACHE_POLICY"] = APP_CLASSIFIER_CACHE_POLICY
     os.environ["APP_CLASSIFIER_INCLUDE_PROBABILITIES"] = APP_CLASSIFIER_INCLUDE_PROBABILITIES
     os.environ["APP_CLASSIFIER_INCLUDE_LABEL_IDS"] = APP_CLASSIFIER_INCLUDE_LABEL_IDS
     os.environ["APP_CLASSIFIER_OVERWRITE_PREDICTION_ID"] = APP_CLASSIFIER_OVERWRITE_PREDICTION_ID
+    os.environ["APP_CLASSIFIER_NO_4BIT"] = APP_CLASSIFIER_NO_4BIT
 
     if APP_CLASSIFIER_HF_TOKEN:
         os.environ["APP_CLASSIFIER_HF_TOKEN"] = APP_CLASSIFIER_HF_TOKEN
@@ -102,6 +106,15 @@ def run_once() -> int:
 
 
 def main():
+    _set_model_env()
+
+    logger.info(
+        "Starting app classifier processor: models=%s, cache_policy=%s, batch_size=%s",
+        APP_CLASSIFIER_LIST_MODELS,
+        APP_CLASSIFIER_CACHE_POLICY,
+        BATCH_SIZE,
+    )
+
     while True:
         try:
             n = run_once()
