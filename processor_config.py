@@ -59,3 +59,16 @@ APP_CLASSIFIER_NO_4BIT = os.getenv(
     "APP_CLASSIFIER_NO_4BIT",
     "0",
 )
+
+# Queue identity behavior.
+# prediction_id is generated internally and removed before pushing results.
+# bundle_id is the external identifier returned downstream.
+APP_CLASSIFIER_REQUIRE_BUNDLE_ID = os.getenv(
+    "APP_CLASSIFIER_REQUIRE_BUNDLE_ID",
+    "1",
+)
+
+APP_CLASSIFIER_DUPLICATE_BUNDLE_ID_POLICY = os.getenv(
+    "APP_CLASSIFIER_DUPLICATE_BUNDLE_ID_POLICY",
+    "error",
+)
