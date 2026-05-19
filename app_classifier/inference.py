@@ -1,6 +1,8 @@
+import gc
 import json
 import os
-from typing import Any, Dict, List, Optional
+import uuid
+from typing import Any, Dict, List, Optional, Union
 
 import pandas as pd
 import torch
@@ -13,9 +15,13 @@ from transformers import (
     BitsAndBytesConfig,
 )
 
-from .config import get_hf_token, normalize_hf_repo_id
+from .config import (
+    get_hf_token,
+    get_model_specs,
+    normalize_hf_repo_id,
+    parse_model_list,
+)
 from .text import make_text
-
 
 
 def _load_label_mapping(
@@ -98,6 +104,31 @@ def _safe_prob_column_name(label: str) -> str:
         .replace("/", "_")
         .replace("-", "_")
     )
+
+
+def generate_prediction_ids(n: int) -> List[str]:
+    return [uuid.uuid4().hex for _ in range(n)]
+
+
+def ensure_prediction_id_column(
+    df: pd.DataFrame,
+    prediction_id_col: str = "prediction_id",
+    overwrite: bool = False,
+) -> pd.DataFrame:
+    out = df.copy()
+
+    needs_new_ids = (
+        overwrite
+        or prediction_id_col not in out.columns
+        or out[prediction_id_col].isna().any()
+        or out[prediction_id_col].astype(str).duplicated().any()
+        or (out[prediction_id_col].astype(str).str.strip() == "").any()
+    )
+
+    if needs_new_ids:
+        out[prediction_id_col] = generate_prediction_ids(len(out))
+
+    return out
 
 
 class AppRiskClassifier:
@@ -231,9 +262,6 @@ class AppRiskClassifier:
 
             with torch.no_grad():
                 out = self.model(**enc)
-
-                # Avoid bf16/fp16 -> NumPy issues.
-                # Always cast logits to fp32 before softmax.
                 logits = out.logits.float()
                 probs = torch.softmax(logits, dim = 1).detach().cpu().numpy()
 
@@ -289,3 +317,179 @@ class AppRiskClassifier:
             ],
             axis = 1,
         )
+
+
+class MultiAppRiskClassifier:
+    def __init__(
+        self,
+        model_id: str,
+        list_models: Optional[Union[str, List[str]]] = None,
+        token: Optional[str] = None,
+        max_length: int = 512,
+        device_map: str = "auto",
+        load_in_4bit: bool = True,
+    ):
+        self.model_id = normalize_hf_repo_id(model_id)
+        self.list_models = parse_model_list(list_models)
+        self.model_specs = get_model_specs(self.list_models)
+        self.token = get_hf_token(token)
+        self.max_length = max_length
+        self.device_map = device_map
+        self.load_in_4bit = load_in_4bit
+
+        self._classifiers: Dict[str, AppRiskClassifier] = {}
+
+    @classmethod
+    def from_hf(
+        cls,
+        model_id: str,
+        list_models: Optional[Union[str, List[str]]] = None,
+        token: Optional[str] = None,
+        **kwargs,
+    ):
+        return cls(
+            model_id = model_id,
+            list_models = list_models,
+            token = token,
+            **kwargs,
+        )
+
+    def _get_classifier(self, model_name: str) -> AppRiskClassifier:
+        if model_name in self._classifiers:
+            return self._classifiers[model_name]
+
+        spec = self.model_specs[model_name]
+
+        clf = AppRiskClassifier.from_hf(
+            model_id = self.model_id,
+            subfolder = spec["subfolder"],
+            token = self.token,
+            max_length = self.max_length,
+            device_map = self.device_map,
+            load_in_4bit = self.load_in_4bit,
+        )
+
+        self._classifiers[model_name] = clf
+
+        return clf
+
+    def unload(self):
+        self._classifiers.clear()
+        gc.collect()
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def predict_df(
+        self,
+        df: pd.DataFrame,
+        title_col: str = "title",
+        description_col: str = "description",
+        batch_size: int = 8,
+        prediction_id_col: str = "prediction_id",
+        overwrite_prediction_id: bool = False,
+        include_probabilities: bool = False,
+        include_label_ids: bool = False,
+    ) -> pd.DataFrame:
+        if title_col not in df.columns:
+            raise ValueError(f"Missing title column: {title_col}")
+
+        if description_col not in df.columns:
+            raise ValueError(f"Missing description column: {description_col}")
+
+        out = ensure_prediction_id_column(
+            df = df,
+            prediction_id_col = prediction_id_col,
+            overwrite = overwrite_prediction_id,
+        ).reset_index(drop = True)
+
+        prediction_input = out[[title_col, description_col]].copy()
+
+        for model_name in self.list_models:
+            spec = self.model_specs[model_name]
+            prefix = spec["prefix"]
+
+            clf = self._get_classifier(model_name)
+
+            pred_df = clf.predict_df(
+                prediction_input,
+                title_col = title_col,
+                description_col = description_col,
+                batch_size = batch_size,
+            )
+
+            model_cols = [
+                col
+                for col in pred_df.columns
+                if col.startswith("pred_")
+            ]
+
+            if not include_probabilities:
+                model_cols = [
+                    col
+                    for col in model_cols
+                    if not col.startswith("pred_prob_")
+                ]
+
+            if not include_label_ids:
+                model_cols = [
+                    col
+                    for col in model_cols
+                    if col != "pred_label_id"
+                ]
+
+            rename_map = {
+                col: f"{prefix}_{col}"
+                for col in model_cols
+            }
+
+            model_out = (
+                pred_df[model_cols]
+                .rename(columns = rename_map)
+                .reset_index(drop = True)
+            )
+
+            out = pd.concat(
+                [
+                    out.reset_index(drop = True),
+                    model_out,
+                ],
+                axis = 1,
+            )
+
+        return out
+
+
+def score_with_models(
+    df: pd.DataFrame,
+    model_id: str,
+    list_models: Optional[Union[str, List[str]]] = None,
+    token: Optional[str] = None,
+    title_col: str = "title",
+    description_col: str = "description",
+    batch_size: int = 8,
+    max_length: int = 500,
+    load_in_4bit: bool = True,
+    prediction_id_col: str = "prediction_id",
+    overwrite_prediction_id: bool = False,
+    include_probabilities: bool = False,
+    include_label_ids: bool = False,
+) -> pd.DataFrame:
+    clf = MultiAppRiskClassifier.from_hf(
+        model_id = model_id,
+        list_models = list_models,
+        token = token,
+        max_length = max_length,
+        load_in_4bit = load_in_4bit,
+    )
+
+    return clf.predict_df(
+        df = df,
+        title_col = title_col,
+        description_col = description_col,
+        batch_size = batch_size,
+        prediction_id_col = prediction_id_col,
+        overwrite_prediction_id = overwrite_prediction_id,
+        include_probabilities = include_probabilities,
+        include_label_ids = include_label_ids,
+    )
