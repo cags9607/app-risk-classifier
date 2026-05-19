@@ -1,26 +1,33 @@
 type: task
 
-name: app-risk-classifier
+name: app-risk-classifier-all-models-t4
 
 image: pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime
 
 python: "3.11"
 
 env:
+  PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+
   QUEUE_URL: ${QUEUE_URL}
   QUEUE_API_KEY: ${QUEUE_API_KEY}
   QUEUE_KEY: ${QUEUE_KEY}
 
-  BATCH_SIZE: "8"
+  BATCH_SIZE: "2"
 
   APP_CLASSIFIER_HF_REPO_ID: "Trinotrotolueno/app-risk-adapters"
   APP_CLASSIFIER_HF_TOKEN: ${HF_TOKEN}
+
   APP_CLASSIFIER_LIST_MODELS: "pdu,ai-powered,incentivized"
-  APP_CLASSIFIER_MAX_LENGTH: "512"
+  APP_CLASSIFIER_MAX_LENGTH: "384"
+
+  # T4-safe: load one model, score, unload, then move to next model.
+  APP_CLASSIFIER_CACHE_POLICY: "unload_between_models"
 
   APP_CLASSIFIER_INCLUDE_PROBABILITIES: "0"
   APP_CLASSIFIER_INCLUDE_LABEL_IDS: "0"
   APP_CLASSIFIER_OVERWRITE_PREDICTION_ID: "0"
+  APP_CLASSIFIER_NO_4BIT: "0"
 
 commands:
   - pip install -U pip
@@ -29,8 +36,9 @@ commands:
 
 resources:
   gpu:
+    name: T4
     count: 1
-  memory: 32GB
-  disk: 100GB
+  memory: 16GB
+  disk: 120GB
 
 ports: []
