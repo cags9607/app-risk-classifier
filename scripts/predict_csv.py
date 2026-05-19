@@ -2,7 +2,11 @@ import argparse
 
 import pandas as pd
 
-from app_classifier.config import parse_model_list, prompt_for_hf_repo_and_token
+from app_classifier.config import (
+    normalize_cache_policy,
+    parse_model_list,
+    prompt_for_hf_repo_and_token,
+)
 from app_classifier.inference import score_with_models
 
 
@@ -51,6 +55,17 @@ def main():
     parser.add_argument("--max_length", type = int, default = 512)
     parser.add_argument("--no_4bit", action = "store_true")
     parser.add_argument(
+        "--cache_policy",
+        default = None,
+        choices = ["keep", "unload_between_models", "unload_after_call"],
+        help = (
+            "Model cache policy. "
+            "keep = cache loaded models; "
+            "unload_between_models = T4-safe all-model mode; "
+            "unload_after_call = clear after each call."
+        ),
+    )
+    parser.add_argument(
         "--prediction_id_col",
         default = "prediction_id",
         help = "Name of the prediction ID column.",
@@ -94,7 +109,10 @@ def main():
     else:
         list_models = parse_model_list(None)
 
+    cache_policy = normalize_cache_policy(args.cache_policy)
+
     print("Running models:", ", ".join(list_models))
+    print("Cache policy:", cache_policy)
 
     df = pd.read_csv(args.input_csv)
 
@@ -112,6 +130,7 @@ def main():
         overwrite_prediction_id = args.overwrite_prediction_id,
         include_probabilities = args.include_probabilities,
         include_label_ids = args.include_label_ids,
+        cache_policy = cache_policy,
     )
 
     out.to_csv(args.output_csv, index = False)
