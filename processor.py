@@ -7,8 +7,12 @@ from typing import Any, Dict, List
 from core import predict_records
 from processor_config import (
     APP_CLASSIFIER_HF_REPO_ID,
-    APP_CLASSIFIER_HF_SUBFOLDER,
     APP_CLASSIFIER_HF_TOKEN,
+    APP_CLASSIFIER_INCLUDE_LABEL_IDS,
+    APP_CLASSIFIER_INCLUDE_PROBABILITIES,
+    APP_CLASSIFIER_LIST_MODELS,
+    APP_CLASSIFIER_MAX_LENGTH,
+    APP_CLASSIFIER_OVERWRITE_PREDICTION_ID,
     BATCH_SIZE,
 )
 from processor_utils import pop, push
@@ -24,9 +28,11 @@ logger = logging.getLogger(__name__)
 
 def _set_model_env():
     os.environ["APP_CLASSIFIER_HF_REPO_ID"] = APP_CLASSIFIER_HF_REPO_ID
-
-    if APP_CLASSIFIER_HF_SUBFOLDER:
-        os.environ["APP_CLASSIFIER_HF_SUBFOLDER"] = APP_CLASSIFIER_HF_SUBFOLDER
+    os.environ["APP_CLASSIFIER_LIST_MODELS"] = APP_CLASSIFIER_LIST_MODELS
+    os.environ["APP_CLASSIFIER_MAX_LENGTH"] = str(APP_CLASSIFIER_MAX_LENGTH)
+    os.environ["APP_CLASSIFIER_INCLUDE_PROBABILITIES"] = APP_CLASSIFIER_INCLUDE_PROBABILITIES
+    os.environ["APP_CLASSIFIER_INCLUDE_LABEL_IDS"] = APP_CLASSIFIER_INCLUDE_LABEL_IDS
+    os.environ["APP_CLASSIFIER_OVERWRITE_PREDICTION_ID"] = APP_CLASSIFIER_OVERWRITE_PREDICTION_ID
 
     if APP_CLASSIFIER_HF_TOKEN:
         os.environ["APP_CLASSIFIER_HF_TOKEN"] = APP_CLASSIFIER_HF_TOKEN
@@ -51,10 +57,13 @@ def _attach_result(job: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any
 
 
 def process_jobs(jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    _set_model_env()
+
     payloads = [_extract_payload(job) for job in jobs]
 
     records = [
         {
+            "prediction_id": payload.get("prediction_id"),
             "title": payload.get("title", ""),
             "description": payload.get("description", ""),
         }
