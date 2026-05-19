@@ -18,6 +18,7 @@ from transformers import (
 from .config import (
     get_hf_token,
     get_model_specs,
+    normalize_cache_policy,
     normalize_hf_repo_id,
     parse_model_list,
 )
@@ -168,7 +169,6 @@ class AppRiskClassifier:
         self.num_labels = len(self.id2label)
 
         compute_dtype = torch.float16
-
         quantization_config = None
 
         if load_in_4bit:
@@ -237,6 +237,22 @@ class AppRiskClassifier:
             **kwargs,
         )
 
+    def unload(self):
+        try:
+            del self.model
+        except Exception:
+            pass
+
+        try:
+            del self.tokenizer
+        except Exception:
+            pass
+
+        gc.collect()
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     def predict_texts(
         self,
         texts: List[str],
@@ -260,7 +276,7 @@ class AppRiskClassifier:
                 for k, v in enc.items()
             }
 
-            with torch.no_grad():
+            with torch.inference_mode():
                 out = self.model(**enc)
                 logits = out.logits.float()
                 probs = torch.softmax(logits, dim = 1).detach().cpu().numpy()
@@ -328,6 +344,7 @@ class MultiAppRiskClassifier:
         max_length: int = 512,
         device_map: str = "auto",
         load_in_4bit: bool = True,
+        cache_policy: Optional[str] = None,
     ):
         self.model_id = normalize_hf_repo_id(model_id)
         self.list_models = parse_model_list(list_models)
@@ -336,6 +353,7 @@ class MultiAppRiskClassifier:
         self.max_length = max_length
         self.device_map = device_map
         self.load_in_4bit = load_in_4bit
+        self.cache_policy = normalize_cache_policy(cache_policy)
 
         self._classifiers: Dict[str, AppRiskClassifier] = {}
 
@@ -352,6 +370,15 @@ class MultiAppRiskClassifier:
             list_models = list_models,
             token = token,
             **kwargs,
+        )
+
+    def are_models_loaded(self) -> bool:
+        if self.cache_policy == "unload_between_models":
+            return False
+
+        return all(
+            model_name in self._classifiers
+            for model_name in self.list_models
         )
 
     def _get_classifier(self, model_name: str) -> AppRiskClassifier:
@@ -373,12 +400,39 @@ class MultiAppRiskClassifier:
 
         return clf
 
-    def unload(self):
-        self._classifiers.clear()
+    def unload_model(self, model_name: str):
+        clf = self._classifiers.pop(model_name, None)
+
+        if clf is not None:
+            clf.unload()
+
         gc.collect()
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    def unload(self):
+        for model_name in list(self._classifiers.keys()):
+            self.unload_model(model_name)
+
+        self._classifiers.clear()
+
+        gc.collect()
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def get_model_info(self) -> Dict[str, Any]:
+        return {
+            "model_id": self.model_id,
+            "list_models": list(self.list_models),
+            "model_specs": self.model_specs,
+            "max_length": self.max_length,
+            "load_in_4bit": self.load_in_4bit,
+            "cache_policy": self.cache_policy,
+            "loaded_models": sorted(self._classifiers.keys()),
+            "models_loaded": self.are_models_loaded(),
+        }
 
     def predict_df(
         self,
@@ -405,59 +459,67 @@ class MultiAppRiskClassifier:
 
         prediction_input = out[[title_col, description_col]].copy()
 
-        for model_name in self.list_models:
-            spec = self.model_specs[model_name]
-            prefix = spec["prefix"]
+        try:
+            for model_name in self.list_models:
+                spec = self.model_specs[model_name]
+                prefix = spec["prefix"]
 
-            clf = self._get_classifier(model_name)
+                clf = self._get_classifier(model_name)
 
-            pred_df = clf.predict_df(
-                prediction_input,
-                title_col = title_col,
-                description_col = description_col,
-                batch_size = batch_size,
-            )
+                pred_df = clf.predict_df(
+                    prediction_input,
+                    title_col = title_col,
+                    description_col = description_col,
+                    batch_size = batch_size,
+                )
 
-            model_cols = [
-                col
-                for col in pred_df.columns
-                if col.startswith("pred_")
-            ]
-
-            if not include_probabilities:
                 model_cols = [
                     col
-                    for col in model_cols
-                    if not col.startswith("pred_prob_")
+                    for col in pred_df.columns
+                    if col.startswith("pred_")
                 ]
 
-            if not include_label_ids:
-                model_cols = [
-                    col
+                if not include_probabilities:
+                    model_cols = [
+                        col
+                        for col in model_cols
+                        if not col.startswith("pred_prob_")
+                    ]
+
+                if not include_label_ids:
+                    model_cols = [
+                        col
+                        for col in model_cols
+                        if col != "pred_label_id"
+                    ]
+
+                rename_map = {
+                    col: f"{prefix}_{col}"
                     for col in model_cols
-                    if col != "pred_label_id"
-                ]
+                }
 
-            rename_map = {
-                col: f"{prefix}_{col}"
-                for col in model_cols
-            }
+                model_out = (
+                    pred_df[model_cols]
+                    .rename(columns = rename_map)
+                    .reset_index(drop = True)
+                )
 
-            model_out = (
-                pred_df[model_cols]
-                .rename(columns = rename_map)
-                .reset_index(drop = True)
-            )
+                out = pd.concat(
+                    [
+                        out.reset_index(drop = True),
+                        model_out,
+                    ],
+                    axis = 1,
+                )
 
-            out = pd.concat(
-                [
-                    out.reset_index(drop = True),
-                    model_out,
-                ],
-                axis = 1,
-            )
+                if self.cache_policy == "unload_between_models":
+                    self.unload_model(model_name)
 
-        return out
+            return out
+
+        finally:
+            if self.cache_policy == "unload_after_call":
+                self.unload()
 
 
 def score_with_models(
@@ -468,12 +530,13 @@ def score_with_models(
     title_col: str = "title",
     description_col: str = "description",
     batch_size: int = 8,
-    max_length: int = 500,
+    max_length: int = 512,
     load_in_4bit: bool = True,
     prediction_id_col: str = "prediction_id",
     overwrite_prediction_id: bool = False,
     include_probabilities: bool = False,
     include_label_ids: bool = False,
+    cache_policy: Optional[str] = None,
 ) -> pd.DataFrame:
     clf = MultiAppRiskClassifier.from_hf(
         model_id = model_id,
@@ -481,6 +544,7 @@ def score_with_models(
         token = token,
         max_length = max_length,
         load_in_4bit = load_in_4bit,
+        cache_policy = cache_policy,
     )
 
     return clf.predict_df(
